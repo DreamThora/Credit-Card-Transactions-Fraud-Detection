@@ -97,7 +97,7 @@ PR-AUC is preferred over ROC-AUC for imbalanced datasets because it directly mea
 
 ```python
 # Key dependency
-pip install lightgbm imbalanced-learn
+pip install -r requirements.txt
 ```
 
 ---

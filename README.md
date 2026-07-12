@@ -1,6 +1,6 @@
 # 💳 Credit Card Fraud Detection
 
-Binary classification model to detect fraudulent credit card transactions using behavioral and temporal features, evaluated on PR-AUC to handle severe class imbalance.
+Binary classification model to detect fraudulent credit card transactions using behavioral, temporal, and target-encoded features. Evaluated on PR-AUC to handle severe class imbalance, with a three-scenario business case analysis across different deployment thresholds.
 
 ---
 
@@ -47,12 +47,24 @@ Aggregated per credit card number over rolling time windows:
 - Extracted `Day`, `Month`, `Hour` from transaction datetime
 - Created `is_night` binary flag (hours 0–4 and 21–23) based on observed fraud concentration
 
-### Age Features
-- Computed customer age using 2021 as reference year (dataset spans 2019–2020)
-- Binned into meaningful groups: `Student / Young Adult / Adult / Middle Age / Senior / Elderly`
+### High-Cardinality Features (Target Encoding with Smoothing)
+Raw fraud rates from small-sample groups are unreliable — a job category with 9 transactions all fraud yields 100% rate, but it is just noise.
 
-### Amount Features
-- Binned `amt` into 3 groups (`Low` / `Mid` / `High`) to capture the bimodal fraud distribution (~$100 and ~$500 peaks)
+| Layer | Effect |
+|---|---|
+| Threshold (`min_samples=50`) | Groups with too few samples → use global mean |
+| Smoothing (`k=100`) | Shrinks estimates toward global mean based on sample size |
+| Out-of-Fold (`GroupKFold`, 5 folds by `cc_num`) | Prevents target leakage from a row's own label |
+
+Applied to: `state`, `city`, `job`, `merchant`
+
+### Category Features
+- `is_online` — online (`_net`) vs in-person (`_pos`) transactions
+- `risk_tier` — High / Mid / Low based on category fraud rate (derived from training set only)
+
+### Age & Amount Features
+- Customer age computed from DOB using 2021 as reference year, binned into 6 groups
+- `amt` binned into Low / Mid / High to capture the bimodal fraud distribution (~$100 and ~$500 peaks)
 
 ---
 
@@ -62,22 +74,41 @@ Three strategies were trained and compared on the (never-resampled) test set:
 
 | Strategy | Approach |
 |---|---|
-| Original | Use `scale_pos_weight` in LightGBM to upweight fraud class |
+| Original | Use `scale_pos_weight` to upweight fraud class |
 | Undersampling | `RandomUnderSampler` to balance classes |
 | Oversampling | `SMOTE` with k=5 neighbors to synthesize fraud samples |
 
-**Winner: Original + `scale_pos_weight`** — highest PR-AUC on the real-world imbalanced test set.
+**Winner: Original + `scale_pos_weight`** — highest PR-AUC on the real-world imbalanced test set across all models.
 
 ---
 
-## 🤖 Model
+## ⚙️ Preprocessing Pipeline
 
-**LightGBM** with the following configuration:
-- `n_estimators=500`, `learning_rate=0.05`, `num_leaves=63`
-- `subsample=0.8`, `colsample_bytree=0.8`
-- Evaluated at `threshold=0.5` (tunable for production use)
+```
+Raw Data
+   ↓ EDA with fraud rate by feature
+   ↓ Temporal / age / amount feature engineering
+   ↓ Velocity feature engineering (rolling windows per card)
+   ↓ Target encoding with smoothing (state, city, job, merchant)
+   ↓ Category encoding (is_online, risk_tier)
+   ↓ Outlier-preserving scaling (log1p + RobustScaler)
+   ↓ Class imbalance handling (3 strategies)
+   ↓ Model comparison → Threshold tuning → Business Case Analysis
+```
 
-Other models tested (commented out in notebook): Logistic Regression, Decision Tree, Random Forest, XGBoost.
+---
+
+## 🤖 Model Comparison
+
+| Model | Strategy | PR-AUC | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| Logistic Regression | Original | 0.4038 | 0.11 | 0.96 | 0.19 |
+| Decision Tree | Original | 0.8219 | 0.57 | 0.89 | 0.70 |
+| Random Forest | Original | 0.9615 | 0.95 | 0.87 | 0.91 |
+| **XGBoost** | **Original** | **0.9750** | 0.89 | 0.95 | **0.92** |
+| LightGBM | Original | 0.9748 | 0.88 | 0.95 | 0.92 |
+
+**Winner: XGBoost (Original)** — PR-AUC 0.9750, F1 0.92
 
 ---
 
@@ -89,14 +120,35 @@ PR-AUC is preferred over ROC-AUC for imbalanced datasets because it directly mea
 
 ---
 
+## 📈 Business Case Analysis
+
+**Test period:** Jul–Dec 2020 (~193 days) · 555,719 transactions · 2,145 frauds  
+**Baseline (no model):** ~USD 1.14M loss per 6 months
+
+> ⚠️ Cost figures below are illustrative placeholders only (USD 530 avg fraud amount, USD 5 review cost, USD 20 false-block cost). Replace with real institution-specific costs before using for actual deployment decisions.
+
+| Scenario | Threshold | Caught (TP) | Missed (FN) | False Alarms (FP) | Fraud Prevented | Fraud Lost |
+|---|---|---|---|---|---|---|
+| A. Auto-block | 0.992 | 1,772 (83%) | 373 | 26 | ~USD 939K | ~USD 198K |
+| B. Balanced | 0.907 | 1,940 (90%) | 205 | 122 | ~USD 1.03M | ~USD 109K |
+| C. Review queue | 0.014 | 2,102 (98%) | 43 | 2,966 | ~USD 1.11M | ~USD 23K |
+
+### Recommended Deployment: Two-Threshold System
+
+- **score ≥ 0.992 → block automatically** (only 26 false blocks in 6 months)
+- **0.014 ≤ score < 0.992 → send to review queue** (~17 reviews/day, recovering USD 175K additional fraud)
+- **score < 0.014 → approve**
+
+---
+
 ## 🚀 How to Run
 
 1. Download the dataset from Kaggle and place CSVs in the input path
 2. Open the notebook in Kaggle or Jupyter
-3. Run all cells in order — feature engineering → resampling → training → evaluation
+3. Run all cells in order — feature engineering → encoding → scaling → model comparison → threshold tuning → business case
 
 ```python
-# Key dependency
+# Key dependencies
 pip install -r requirements.txt
 ```
 
@@ -105,6 +157,6 @@ pip install -r requirements.txt
 ## 🔮 Future Improvements
 
 - **Geo-velocity features** — flag physically impossible transactions (e.g. two transactions in different countries within minutes)
-- **Threshold optimization** — tune decision threshold using a business cost matrix (cost of FP vs FN) instead of default 0.5
-- **Hyperparameter Tuning** — current LightGBM uses near-default parameters; tuning `num_leaves`, `max_depth`, and `learning_rate` via GridSearch or Optuna could improve PR-AUC further
-- **Feature Importance Analysis** — evaluate how velocity features rank against other features to validate the engineering effort and identify candidates for removal
+- **Hyperparameter Tuning** — current XGBoost uses near-default parameters; tuning via Optuna could improve PR-AUC further
+- **Feature Importance Analysis** — evaluate how velocity features rank against target-encoded features to validate engineering effort
+- **Online learning** — update model incrementally as new labeled fraud data arrives to adapt to evolving fraud patterns

@@ -56,7 +56,7 @@ Raw fraud rates from small-sample groups are unreliable — a job category with 
 | Smoothing (`k=100`) | Shrinks estimates toward global mean based on sample size |
 | Out-of-Fold (`GroupKFold`, 5 folds by `cc_num`) | Prevents target leakage from a row's own label |
 
-Applied to: `state`, `city`, `job`, `merchant`
+Tested on: `state`, `city`, `job`, `merchant` — but `state_fraud_rate`, `city_fraud_rate`, and `job_fraud_rate` showed negligible separation between fraud and non-fraud (diff ≈ 0.000007–0.07) and were dropped. Only **`merchant_fraud_rate`** was retained in the final feature set.
 
 ### Category Features
 - `is_online` — online (`_net`) vs in-person (`_pos`) transactions
@@ -89,7 +89,7 @@ Raw Data
    ↓ EDA with fraud rate by feature
    ↓ Temporal / age / amount feature engineering
    ↓ Velocity feature engineering (rolling windows per card)
-   ↓ Target encoding with smoothing (state, city, job, merchant)
+   ↓ Target encoding with smoothing (merchant; state/city/job tested & dropped)
    ↓ Category encoding (is_online, risk_tier)
    ↓ Outlier-preserving scaling (log1p + RobustScaler)
    ↓ Class imbalance handling (3 strategies)
